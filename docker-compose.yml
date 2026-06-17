@@ -1,0 +1,143 @@
+version: '3.8'
+
+services:
+  # ==================== INFRASTRUCTURE ====================
+  
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - bigdata-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - bigdata-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - bigdata-net
+
+  mongodb:
+    image: mongo:6.0
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: people_counting
+    volumes:
+      - mongo-data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - bigdata-net
+
+  mongo-express:
+    image: mongo-express:1.0.0
+    container_name: mongo-express
+    depends_on:
+      - mongodb
+    ports:
+      - "8091:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: password123
+      ME_CONFIG_MONGODB_URL: mongodb://admin:password123@mongodb:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    networks:
+      - bigdata-net
+
+  # ==================== APPLICATION SERVERS ====================
+
+  camera-server:
+    build:
+      context: ./camera-server
+      dockerfile: Dockerfile
+    container_name: camera-server
+    ports:
+      - "5001:5001"
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC_FRAMES: camera-frames
+      FLASK_ENV: development
+    networks:
+      - bigdata-net
+    volumes:
+      - ./camera-server:/app
+
+  processing-server:
+    build:
+      context: ./processing-server
+      dockerfile: Dockerfile
+    container_name: processing-server
+    ports:
+      - "5002:5002"
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC_FRAMES: camera-frames
+      KAFKA_TOPIC_RESULTS: detection-results
+      KAFKA_GROUP_ID: processing-group
+      FLASK_ENV: development
+    networks:
+      - bigdata-net
+    volumes:
+      - ./processing-server:/app
+
+  storage-server:
+    build:
+      context: ./storage-server
+      dockerfile: Dockerfile
+    container_name: storage-server
+    ports:
+      - "5003:5003"
+    depends_on:
+      - kafka
+      - mongodb
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC_RESULTS: detection-results
+      KAFKA_GROUP_ID: storage-group
+      MONGODB_URI: mongodb://admin:password123@mongodb:27017/
+      MONGODB_DB: people_counting
+      FLASK_ENV: development
+    networks:
+      - bigdata-net
+    volumes:
+      - ./storage-server:/app
+
+volumes:
+  mongo-data:
+
+networks:
+  bigdata-net:
+    driver: bridge
