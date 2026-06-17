@@ -6,48 +6,64 @@ Hệ thống đếm số lượng người trong camera thời gian thực, xây
 
 ## Kiến trúc hệ thống
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        BIG DATA PIPELINE                                │
-│                                                                         │
-│  ┌──────────────────┐   Kafka Topic        ┌────────────────────────┐  │
-│  │  CAMERA SERVER   │  "camera-frames"     │  PROCESSING SERVER     │  │
-│  │  (Port 5001)     │ ──────────────────►  │  (Port 5002)           │  │
-│  │                  │   (GZIP compressed)  │                        │  │
-│  │ • Nhận frame     │                      │ • HOG + SVM Detector   │  │
-│  │ • Resize ảnh     │                      │ • Non-max suppression  │  │
-│  │ • Publish Kafka  │                      │ • Bounding boxes       │  │
-│  │ • Simulate cam   │                      │ • Publish results      │  │
-│  └──────────────────┘                      └────────────────────────┘  │
-│                                                       │                 │
-│                                       Kafka Topic     │                 │
-│                                    "detection-results"│                 │
-│                                                       ▼                 │
-│                                       ┌───────────────────────────┐    │
-│                                       │  STORAGE SERVER           │    │
-│                                       │  (Port 5003)              │    │
-│                                       │                           │    │
-│                                       │ • Consume results         │    │
-│                                       │ • Save to MongoDB         │    │
-│                                       │ • Per-minute aggregation  │    │
-│                                       │ • REST Query API          │    │
-│                                       └───────────────────────────┘    │
-│                                                       │                 │
-│                                                       ▼                 │
-│                                              ┌─────────────┐           │
-│                                              │  MONGODB    │           │
-│                                              │  (Port 27017│           │
-│                                              └─────────────┘           │
-├─────────────────────────────────────────────────────────────────────────┤
-│  INFRASTRUCTURE                                                         │
-│  • Apache Kafka (Port 9092)    — Message streaming backbone            │
-│  • Zookeeper (Port 2181)       — Kafka coordination                    │
-│  • Kafka UI (Port 8090)        — Dashboard monitoring                  │
-│  • MongoDB (Port 27017)        — Document store                        │
-│  • Mongo Express (Port 8091)   — DB management UI                      │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+```mermaid
+flowchart TB
+    subgraph INPUT["📷  Nguồn dữ liệu"]
+        CAM["Camera / Client\nUpload ảnh hoặc video stream"]
+    end
 
+    subgraph APP["🖥️  Tầng ứng dụng  (Microservices)"]
+        direction TB
+
+        CS["<b>Camera Server</b> :5001\n─────────────────\n• Nhận frame từ camera\n• Resize ảnh ≤ 640px\n• Base64 encode\n• Publish lên Kafka"]
+
+        subgraph KAFKA["⚡  Apache Kafka  :9092  (Big Data Backbone)"]
+            direction LR
+            T1[["Topic\ncamera-frames"]]
+            T2[["Topic\ndetection-results"]]
+        end
+
+        PS["<b>Processing Server</b> :5002\n─────────────────\n• HOG + SVM Detector\n• Non-Max Suppression\n• Sinh Bounding Boxes\n• Publish kết quả"]
+
+        SS["<b>Storage Server</b> :5003\n─────────────────\n• Consume kết quả\n• Lưu vào MongoDB\n• Aggregation theo phút\n• REST Query API"]
+    end
+
+    subgraph DB["🗄️  Lưu trữ"]
+        MONGO[("MongoDB :27017\ndetection_results\nminute_stats")]
+    end
+
+    subgraph MONITOR["📊  Monitoring & Dashboard"]
+        direction LR
+        KUI["Kafka UI\n:8090"]
+        MEX["Mongo Express\n:8091"]
+    end
+
+    CAM -->|"POST /send-frame\nmultipart/form-data"| CS
+    CS -->|"JSON + GZIP\n{frame_id, image_b64}"| T1
+    T1 -->|"Consumer Group\nprocessing-group"| PS
+    PS -->|"JSON\n{people_count, bboxes[]}"| T2
+    T2 -->|"Consumer Group\nstorage-group"| SS
+    SS -->|"insert_one()\nupsert minute_stats"| MONGO
+
+    KAFKA -.->|monitor| KUI
+    MONGO -.->|browse| MEX
+
+    style INPUT fill:#e8f4fd,stroke:#3b82f6,color:#1e3a5f
+    style APP fill:#f0fdf4,stroke:#16a34a,color:#14532d
+    style KAFKA fill:#fefce8,stroke:#ca8a04,color:#713f12
+    style DB fill:#fdf4ff,stroke:#9333ea,color:#581c87
+    style MONITOR fill:#f8fafc,stroke:#94a3b8,color:#334155
+```
+### Luồng dữ liệu chi tiết
+
+| Bước | Từ | Đến | Dữ liệu |
+|:---:|---|---|---|
+| 1 | Camera / Client | Camera Server | File ảnh JPEG/PNG |
+| 2 | Camera Server | Kafka `camera-frames` | `{frame_id, camera_id, image_b64, timestamp}` |
+| 3 | Kafka `camera-frames` | Processing Server | Kafka message (GZIP) |
+| 4 | Processing Server | Kafka `detection-results` | `{people_count, bounding_boxes[], processing_ms}` |
+| 5 | Kafka `detection-results` | Storage Server | Kafka message |
+| 6 | Storage Server | MongoDB | Document + per-minute aggregation |
 ---
 
 ## Công nghệ sử dụng
